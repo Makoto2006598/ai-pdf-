@@ -20,7 +20,7 @@ const path = require("path");
 const CONFIG = {
   port: parseInt(process.env.PORT || "8787"),
   ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434",
-  model: process.env.OLLAMA_MODEL || "qwen2.5:7b",
+  model: process.env.OLLAMA_MODEL || "qwen2.5:14b",
   // 静态文件目录（相对于本文件）
   staticDir: path.join(__dirname, "notes-pdf", "dist"),
   // 原始 Worker URL（在 JS 中替换掉）

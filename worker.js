@@ -232,7 +232,7 @@ export default {
       if (provider === "ollama") {
         const ollamaUrl = env.OLLAMA_URL;
         if (!ollamaUrl) throw new Error("未配置 OLLAMA_URL 环境变量");
-        result = await callOllama(systemPrompt, text, model || "qwen2.5:7b", ollamaUrl);
+        result = await callOllama(systemPrompt, text, model || "qwen2.5:14b", ollamaUrl);
       } else {
         // 默认 groq
         const apiKey = env.GROQ_API_KEY;
