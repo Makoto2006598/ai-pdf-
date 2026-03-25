@@ -130,12 +130,12 @@ async function checkRateLimit(ip, env) {
 }
 
 // ─── 调用 AI API ──────────────────────────────────────────────────────────────
-async function callAI(providerId, modelId, userText, env) {
+async function callAI(providerId, modelId, userText, env, userApiKey) {
   const cfg = PROVIDER_CONFIG[providerId];
   if (!cfg) throw { status: 400, message: `未知提供商：${providerId}` };
 
-  const apiKey = cfg.getKey(env);
-  if (!apiKey) throw { status: 503, message: `${providerId} API Key 未配置，请联系管理员` };
+  const apiKey = userApiKey || cfg.getKey(env);
+  if (!apiKey) throw { status: 503, message: `${providerId} API Key 未配置，请联系管理员或在前端填入自己的 Key` };
 
   let body, headers;
 
@@ -232,9 +232,12 @@ async function handleRequest(request, env) {
       return jsonResp({ error: "笔记内容超出长度限制（最多 8000 字符），请分段处理" }, 413);
     }
 
-    // ── 限流检查 ──
+    // 读取用户自带的 API Key（可选）
+    const userApiKey = request.headers.get("X-User-Api-Key") || "";
+
+    // ── 限流检查（自带 Key 的用户不受限流）──
     const ip     = request.headers.get("CF-Connecting-IP") || "unknown";
-    const rLimit = await checkRateLimit(ip, env);
+    const rLimit = userApiKey ? { allowed: true, remaining: 999 } : await checkRateLimit(ip, env);
     if (!rLimit.allowed) {
       const mins = Math.ceil(rLimit.resetIn / 60);
       return jsonResp(
@@ -245,7 +248,7 @@ async function handleRequest(request, env) {
 
     // ── 调用 AI ──
     try {
-      const html = await callAI(provider, model, text, env);
+      const html = await callAI(provider, model, text, env, userApiKey);
       return jsonResp({ html, remaining: rLimit.remaining });
     } catch (e) {
       const status  = typeof e.status === "number" ? e.status : 500;
