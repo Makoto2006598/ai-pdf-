@@ -9,6 +9,14 @@ const PROXY_URL = "https://notes-ai-proxy.notetopdf.workers.dev/api/convert";
 // AI 提供商
 // ═══════════════════════════════════════════════════════════════════════════════
 const PROVIDERS = {
+  local: {
+    id: "local", name: "本地模型", flag: "🖥", color: "#22d3ee",
+    models: [
+      { id: "local", name: "本地 GGUF 模型" },
+    ],
+    defaultModel: "local",
+    direct: true, // 直接调用，不经过 Cloudflare Worker
+  },
   groq: {
     id: "groq", name: "Groq", flag: "⚡", color: "#f97316",
     models: [
@@ -134,17 +142,22 @@ async function extractPdfText(file) {
 }
 
 // ─── API 调用 ─────────────────────────────────────────────────────────────────
-async function callAI(providerId, modelId, text, type, options, signal) {
+async function callAI(providerId, modelId, text, type, options, signal, { localUrl, userApiKey } = {}) {
+  const provider = PROVIDERS[providerId];
+  const url = provider?.direct ? (localUrl || "http://127.0.0.1:8788/api/convert") : PROXY_URL;
+  const headers = { "Content-Type": "application/json" };
+  if (userApiKey) headers["X-User-Api-Key"] = userApiKey;
   let res;
   try {
-    res = await fetch(PROXY_URL, {
-      method: "POST", signal,
-      headers: { "Content-Type": "application/json" },
+    res = await fetch(url, {
+      method: "POST", signal, headers,
       body: JSON.stringify({ provider: providerId, model: modelId, text, type, options }),
     });
   } catch (e) {
     if (e.name === "AbortError") throw e;
-    throw new Error("网络连接失败，请检查 PROXY_URL 是否填写正确");
+    throw new Error(provider?.direct
+      ? `无法连接到本地服务（${url}），请确认服务已启动`
+      : "网络连接失败，请检查 PROXY_URL 是否填写正确");
   }
   const raw = await res.text();
   if (!raw) throw new Error(`服务器返回了空响应（${res.status}），请检查 Worker 是否已部署`);
@@ -278,6 +291,11 @@ export default function App() {
   const [purifyReady, setPurifyReady]     = useState(false);
   const [pdfJsReady, setPdfJsReady]       = useState(false);
 
+  // ── 本地模型 / 自带 Key ──
+  const [localUrl, setLocalUrl]         = useState(() => localStorage.getItem("localUrl") || "http://127.0.0.1:8788/api/convert");
+  const [userApiKey, setUserApiKey]     = useState(() => localStorage.getItem("userApiKey") || "");
+  const [showKeyInput, setShowKeyInput] = useState(false);
+
   // ── 笔记转换状态 ──
   const [activeTemplate, setActiveTemplate] = useState("physics");
   const [input, setInput]               = useState(DEMO_TEMPLATES.physics.text);
@@ -373,7 +391,7 @@ export default function App() {
     abortRef.current = new AbortController();
     setNotesStatus("loading"); setNotesErr(""); setHtml("");
     try {
-      const result = await callAI(providerId, modelId, input, "convert", formatOptions, abortRef.current.signal);
+      const result = await callAI(providerId, modelId, input, "convert", formatOptions, abortRef.current.signal, { localUrl, userApiKey });
       setHtml(result); setNotesStatus("done");
     } catch (e) {
       if (e.name === "AbortError") return;
@@ -406,7 +424,7 @@ export default function App() {
     setSummaryStatus("loading"); setSummaryErr(""); setSummaryResult("");
     const textToSend = pdfInfo.text.slice(0, 12000);
     try {
-      const result = await callAI(providerId, modelId, textToSend, "summarize", summaryOpts, abortRef.current.signal);
+      const result = await callAI(providerId, modelId, textToSend, "summarize", summaryOpts, abortRef.current.signal, { localUrl, userApiKey });
       setSummaryResult(result); setSummaryStatus("done");
     } catch (e) {
       if (e.name === "AbortError") return;
@@ -538,7 +556,7 @@ export default function App() {
             )}
 
             {/* 模型选择条 */}
-            <div style={{ padding:"8px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ padding:"8px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
               {Object.values(PROVIDERS).map(p => {
                 const active = providerId === p.id;
                 return (
@@ -555,12 +573,46 @@ export default function App() {
                 );
               })}
               <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
+                {!PROVIDERS[providerId]?.direct && (
+                  <button onClick={() => setShowKeyInput(v => !v)} title="使用自己的 API Key" style={{
+                    padding:"4px 10px", borderRadius:7, border:`1px solid ${userApiKey ? "rgba(34,211,238,0.5)" : "rgba(255,255,255,0.1)"}`,
+                    background: userApiKey ? "rgba(34,211,238,0.1)" : "rgba(255,255,255,0.04)",
+                    color: userApiKey ? "#22d3ee" : "rgba(255,255,255,0.35)", fontSize:11,
+                    fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer",
+                  }}>🔑 {userApiKey ? "已设置 Key" : "自带 Key"}</button>
+                )}
                 <span style={{ color:"rgba(255,255,255,0.3)", fontSize:11, fontFamily:"sans-serif" }}>模型：</span>
                 <select value={modelId} onChange={e => setModelId(e.target.value)} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer" }}>
                   {currentProvider.models.map(m => <option key={m.id} value={m.id} style={{ background:"#0d1f3c" }}>{m.name}</option>)}
                 </select>
               </div>
             </div>
+
+            {/* 本地模型 URL 输入 */}
+            {PROVIDERS[providerId]?.direct && (
+              <div style={{ padding:"6px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ color:"rgba(34,211,238,0.7)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🖥 服务地址：</span>
+                <input value={localUrl} onChange={e => { setLocalUrl(e.target.value); localStorage.setItem("localUrl", e.target.value); }}
+                  placeholder="http://127.0.0.1:8788/api/convert"
+                  style={{ flex:1, background:"rgba(34,211,238,0.06)", border:"1px solid rgba(34,211,238,0.25)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none" }}
+                />
+                <span style={{ color:"rgba(255,255,255,0.25)", fontSize:10, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>本地服务需先启动</span>
+              </div>
+            )}
+
+            {/* 自带 API Key 输入 */}
+            {showKeyInput && !PROVIDERS[providerId]?.direct && (
+              <div style={{ padding:"6px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ color:"rgba(34,211,238,0.7)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🔑 API Key：</span>
+                <input type="password" value={userApiKey} onChange={e => { setUserApiKey(e.target.value); localStorage.setItem("userApiKey", e.target.value); }}
+                  placeholder={`填入 ${currentProvider.name} API Key，留空则使用服务端公共 Key`}
+                  style={{ flex:1, background:"rgba(34,211,238,0.06)", border:"1px solid rgba(34,211,238,0.25)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none" }}
+                />
+                {userApiKey && (
+                  <button onClick={() => { setUserApiKey(""); localStorage.removeItem("userApiKey"); }} style={{ padding:"4px 8px", borderRadius:6, border:"1px solid rgba(255,80,80,0.3)", background:"rgba(255,80,80,0.08)", color:"#ff8080", fontSize:11, cursor:"pointer" }}>清除</button>
+                )}
+              </div>
+            )}
 
             {/* 主编辑区 */}
             <div style={{ flex:1, display:"grid", gridTemplateColumns:"1fr 1px 1fr", padding:"12px 24px 0", overflow:"hidden", minHeight:0, gap:0 }}>
