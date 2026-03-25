@@ -165,7 +165,7 @@ async function callAI(providerId, modelId, text, type, options, signal, { localU
   try { data = JSON.parse(raw); }
   catch { throw new Error(`响应格式错误（${res.status}）：${raw.slice(0, 100)}`); }
   if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
-  return data.html || data.text || "";
+  return { html: data.html || data.text || "", remaining: data.remaining ?? null };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -291,10 +291,11 @@ export default function App() {
   const [purifyReady, setPurifyReady]     = useState(false);
   const [pdfJsReady, setPdfJsReady]       = useState(false);
 
-  // ── 本地模型 / 自带 Key ──
+  // ── 本地模型 / 自带 Key / 剩余配额 ──
   const [localUrl, setLocalUrl]         = useState(() => localStorage.getItem("localUrl") || "http://127.0.0.1:8788/api/convert");
   const [userApiKey, setUserApiKey]     = useState(() => localStorage.getItem("userApiKey") || "");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [remaining, setRemaining]       = useState(null);
 
   // ── 笔记转换状态 ──
   const [activeTemplate, setActiveTemplate] = useState("physics");
@@ -368,6 +369,18 @@ export default function App() {
     setPrintHtml(el.innerHTML);
   }, [html, katexReady, sanitize]);
 
+  // ── Ctrl+Enter 快捷键 ──
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && activeTab === "notes") {
+        e.preventDefault();
+        if (input.trim() && notesStatus !== "loading") handleConvertClick();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTab, input, notesStatus]);
+
   // ── 切换模板（自动清空预览）──
   const handleTemplate = useCallback((key) => {
     setActiveTemplate(key);
@@ -391,13 +404,14 @@ export default function App() {
     abortRef.current = new AbortController();
     setNotesStatus("loading"); setNotesErr(""); setHtml("");
     try {
-      const result = await callAI(providerId, modelId, input, "convert", formatOptions, abortRef.current.signal, { localUrl, userApiKey });
+      const { html: result, remaining: rem } = await callAI(providerId, modelId, input, "convert", formatOptions, abortRef.current.signal, { localUrl, userApiKey });
       setHtml(result); setNotesStatus("done");
+      if (rem != null) setRemaining(rem);
     } catch (e) {
       if (e.name === "AbortError") return;
       setNotesErr(e.message); setNotesStatus("error");
     }
-  }, [input, providerId, modelId]);
+  }, [input, providerId, modelId, localUrl, userApiKey]);
 
   // ── 上传 PDF ──
   const handlePdfFile = useCallback(async (file) => {
@@ -424,13 +438,14 @@ export default function App() {
     setSummaryStatus("loading"); setSummaryErr(""); setSummaryResult("");
     const textToSend = pdfInfo.text.slice(0, 12000);
     try {
-      const result = await callAI(providerId, modelId, textToSend, "summarize", summaryOpts, abortRef.current.signal, { localUrl, userApiKey });
+      const { html: result, remaining: rem } = await callAI(providerId, modelId, textToSend, "summarize", summaryOpts, abortRef.current.signal, { localUrl, userApiKey });
       setSummaryResult(result); setSummaryStatus("done");
+      if (rem != null) setRemaining(rem);
     } catch (e) {
       if (e.name === "AbortError") return;
       setSummaryErr(e.message); setSummaryStatus("error");
     }
-  }, [pdfInfo, providerId, modelId, summaryOpts]);
+  }, [pdfInfo, providerId, modelId, summaryOpts, localUrl, userApiKey]);
 
   // ── 发送到笔记转换 ──
   const sendToNotes = () => {
@@ -475,18 +490,25 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=Fira+Code:wght@400&display=swap');
         * { box-sizing:border-box; margin:0; padding:0; }
         html,body { height:100%; background:#0a1628; }
-        @keyframes spin   { to { transform:rotate(360deg); } }
-        @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-        .preview-fade { animation:fadeIn 0.35s ease; }
+        @keyframes spin    { to { transform:rotate(360deg); } }
+        @keyframes fadeIn  { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+        @keyframes pulse   { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+        @keyframes shimmer { 0% { background-position:200% center; } 100% { background-position:-200% center; } }
+        .preview-fade { animation:fadeIn 0.3s ease; }
         .tab-btn:hover   { background:rgba(255,255,255,0.1) !important; }
-        .chip-btn:hover  { opacity:0.85; }
+        .chip-btn:hover  { filter:brightness(1.12); }
         .convert-btn:hover:not(:disabled) { transform:translateY(-1px); filter:brightness(1.1); }
-        .clear-btn:hover { background:rgba(255,255,255,0.1) !important; }
+        .clear-btn:hover  { background:rgba(255,255,255,0.1) !important; }
         .cancel-btn:hover { background:rgba(255,80,80,0.22) !important; }
         .drop-zone:hover  { border-color:rgba(249,115,22,0.5) !important; background:rgba(249,115,22,0.04) !important; }
-        textarea:focus { border-color:rgba(100,160,255,0.45) !important; }
-        select:focus   { outline:none; border-color:rgba(100,160,255,0.45) !important; }
-        ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12); border-radius:2px; }
+        .key-btn:hover    { background:rgba(34,211,238,0.18) !important; border-color:rgba(34,211,238,0.55) !important; }
+        .url-input:focus  { border-color:rgba(34,211,238,0.55) !important; }
+        textarea:focus    { border-color:rgba(100,160,255,0.45) !important; }
+        select:focus      { outline:none; border-color:rgba(100,160,255,0.45) !important; }
+        .loading-dot { animation:pulse 1.4s ease-in-out infinite; }
+        ::-webkit-scrollbar { width:4px; height:4px; }
+        ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12); border-radius:2px; }
+        .toolbar-scroll::-webkit-scrollbar { height:0; }
       `}</style>
 
       {/* 打印区 */}
@@ -548,70 +570,75 @@ export default function App() {
           </div>
         </div>
 
+        {/* ══ 共享工具栏：AI 服务 ══ */}
+        <div className="toolbar-scroll" style={{ padding:"8px 24px", flexShrink:0, display:"flex", alignItems:"center", gap:6, borderBottom:"1px solid rgba(255,255,255,0.05)", overflowX:"auto" }}>
+          {Object.values(PROVIDERS).map(p => {
+            const active = providerId === p.id;
+            return (
+              <button key={p.id} className="chip-btn" onClick={() => { setProviderId(p.id); setModelId(p.defaultModel); setShowKeyInput(false); }} style={{
+                padding:"4px 11px", borderRadius:7, cursor:"pointer", fontSize:12, flexShrink:0,
+                fontFamily:"'Noto Sans SC',sans-serif", fontWeight:active?700:500, transition:"all 0.15s",
+                background: active ? `${p.color}28` : "rgba(255,255,255,0.04)",
+                color: active ? "#fff" : "rgba(255,255,255,0.4)",
+                border:`1px solid ${active ? p.color+"60" : "rgba(255,255,255,0.08)"}`,
+                display:"flex", alignItems:"center", gap:4,
+              }}>
+                <span style={{ fontSize:11 }}>{p.flag}</span><span>{p.name}</span>
+              </button>
+            );
+          })}
+          <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+            {remaining != null && !PROVIDERS[providerId]?.direct && !userApiKey && (
+              <span title="今日剩余请求次数" style={{ color: remaining <= 3 ? "#f59e0b" : "rgba(255,255,255,0.25)", fontSize:10, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>
+                {remaining <= 3 ? "⚠️" : "🟢"} 剩余 {remaining} 次
+              </span>
+            )}
+            {!PROVIDERS[providerId]?.direct && (
+              <button onClick={() => setShowKeyInput(v => !v)} title="使用自己的 API Key" style={{
+                padding:"3px 9px", borderRadius:6, border:`1px solid ${userApiKey ? "rgba(34,211,238,0.45)" : "rgba(255,255,255,0.08)"}`,
+                background: userApiKey ? "rgba(34,211,238,0.1)" : "rgba(255,255,255,0.03)",
+                color: userApiKey ? "#22d3ee" : "rgba(255,255,255,0.3)", fontSize:11,
+                fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer", transition:"all 0.15s",
+              }}>🔑 {userApiKey ? "Key ✓" : "自带 Key"}</button>
+            )}
+            <span style={{ color:"rgba(255,255,255,0.25)", fontSize:11, fontFamily:"sans-serif" }}>模型：</span>
+            <select value={modelId} onChange={e => setModelId(e.target.value)} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:7, color:"#e8eaf6", padding:"4px 10px", fontSize:12, fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer" }}>
+              {currentProvider.models.map(m => <option key={m.id} value={m.id} style={{ background:"#0d1f3c" }}>{m.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* 本地模型 URL 输入 */}
+        {PROVIDERS[providerId]?.direct && (
+          <div style={{ padding:"5px 24px", flexShrink:0, display:"flex", alignItems:"center", gap:8, background:"rgba(34,211,238,0.04)", borderBottom:"1px solid rgba(34,211,238,0.1)" }}>
+            <span style={{ color:"rgba(34,211,238,0.6)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🖥 服务地址</span>
+            <input className="url-input" value={localUrl} onChange={e => { setLocalUrl(e.target.value); localStorage.setItem("localUrl", e.target.value); }}
+              placeholder="http://127.0.0.1:8788/api/convert"
+              style={{ flex:1, background:"transparent", border:"1px solid rgba(34,211,238,0.2)", borderRadius:6, color:"#e8eaf6", padding:"4px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none", transition:"border 0.2s" }}
+            />
+            <span style={{ color:"rgba(255,255,255,0.2)", fontSize:10, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>本地服务需先启动</span>
+          </div>
+        )}
+
+        {/* 自带 API Key 输入 */}
+        {showKeyInput && !PROVIDERS[providerId]?.direct && (
+          <div style={{ padding:"5px 24px", flexShrink:0, display:"flex", alignItems:"center", gap:8, background:"rgba(34,211,238,0.04)", borderBottom:"1px solid rgba(34,211,238,0.1)" }}>
+            <span style={{ color:"rgba(34,211,238,0.6)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🔑 API Key</span>
+            <input type="password" className="url-input" value={userApiKey} onChange={e => { setUserApiKey(e.target.value); localStorage.setItem("userApiKey", e.target.value); }}
+              placeholder={`填入 ${currentProvider.name} API Key，留空则使用服务端公共 Key`}
+              style={{ flex:1, background:"transparent", border:"1px solid rgba(34,211,238,0.2)", borderRadius:6, color:"#e8eaf6", padding:"4px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none", transition:"border 0.2s" }}
+            />
+            {userApiKey && (
+              <button onClick={() => { setUserApiKey(""); localStorage.removeItem("userApiKey"); }} style={{ padding:"3px 8px", borderRadius:5, border:"1px solid rgba(255,80,80,0.25)", background:"rgba(255,80,80,0.07)", color:"#ff8080", fontSize:11, cursor:"pointer" }}>清除</button>
+            )}
+          </div>
+        )}
+
         {/* ══════════ 笔记转换 Tab ══════════ */}
         {activeTab === "notes" && (
           <>
             {notesStatus === "error" && (
               <div style={{ margin:"8px 24px 0", padding:"8px 14px", flexShrink:0, background:"rgba(255,80,80,0.12)", border:"1px solid rgba(255,80,80,0.28)", borderRadius:8, color:"#ff8080", fontSize:13, fontFamily:"sans-serif" }}>⚠️ {notesErr}</div>
-            )}
-
-            {/* 模型选择条 */}
-            <div style={{ padding:"8px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-              {Object.values(PROVIDERS).map(p => {
-                const active = providerId === p.id;
-                return (
-                  <button key={p.id} className="chip-btn" onClick={() => { setProviderId(p.id); setModelId(p.defaultModel); }} style={{
-                    padding:"5px 13px", borderRadius:8, cursor:"pointer", fontSize:12,
-                    fontFamily:"'Noto Sans SC',sans-serif", fontWeight:active?700:500, transition:"all 0.15s",
-                    background: active ? `${p.color}28` : "rgba(255,255,255,0.04)",
-                    color: active ? "#fff" : "rgba(255,255,255,0.45)",
-                    border:`1px solid ${active ? p.color+"60" : "rgba(255,255,255,0.1)"}`,
-                    display:"flex", alignItems:"center", gap:5,
-                  }}>
-                    <span>{p.flag}</span><span>{p.name}</span>
-                  </button>
-                );
-              })}
-              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
-                {!PROVIDERS[providerId]?.direct && (
-                  <button onClick={() => setShowKeyInput(v => !v)} title="使用自己的 API Key" style={{
-                    padding:"4px 10px", borderRadius:7, border:`1px solid ${userApiKey ? "rgba(34,211,238,0.5)" : "rgba(255,255,255,0.1)"}`,
-                    background: userApiKey ? "rgba(34,211,238,0.1)" : "rgba(255,255,255,0.04)",
-                    color: userApiKey ? "#22d3ee" : "rgba(255,255,255,0.35)", fontSize:11,
-                    fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer",
-                  }}>🔑 {userApiKey ? "已设置 Key" : "自带 Key"}</button>
-                )}
-                <span style={{ color:"rgba(255,255,255,0.3)", fontSize:11, fontFamily:"sans-serif" }}>模型：</span>
-                <select value={modelId} onChange={e => setModelId(e.target.value)} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Noto Sans SC',sans-serif", cursor:"pointer" }}>
-                  {currentProvider.models.map(m => <option key={m.id} value={m.id} style={{ background:"#0d1f3c" }}>{m.name}</option>)}
-                </select>
-              </div>
-            </div>
-
-            {/* 本地模型 URL 输入 */}
-            {PROVIDERS[providerId]?.direct && (
-              <div style={{ padding:"6px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ color:"rgba(34,211,238,0.7)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🖥 服务地址：</span>
-                <input value={localUrl} onChange={e => { setLocalUrl(e.target.value); localStorage.setItem("localUrl", e.target.value); }}
-                  placeholder="http://127.0.0.1:8788/api/convert"
-                  style={{ flex:1, background:"rgba(34,211,238,0.06)", border:"1px solid rgba(34,211,238,0.25)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none" }}
-                />
-                <span style={{ color:"rgba(255,255,255,0.25)", fontSize:10, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>本地服务需先启动</span>
-              </div>
-            )}
-
-            {/* 自带 API Key 输入 */}
-            {showKeyInput && !PROVIDERS[providerId]?.direct && (
-              <div style={{ padding:"6px 24px 0", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ color:"rgba(34,211,238,0.7)", fontSize:11, fontFamily:"sans-serif", whiteSpace:"nowrap" }}>🔑 API Key：</span>
-                <input type="password" value={userApiKey} onChange={e => { setUserApiKey(e.target.value); localStorage.setItem("userApiKey", e.target.value); }}
-                  placeholder={`填入 ${currentProvider.name} API Key，留空则使用服务端公共 Key`}
-                  style={{ flex:1, background:"rgba(34,211,238,0.06)", border:"1px solid rgba(34,211,238,0.25)", borderRadius:7, color:"#e8eaf6", padding:"5px 10px", fontSize:12, fontFamily:"'Fira Code','Consolas',monospace", outline:"none" }}
-                />
-                {userApiKey && (
-                  <button onClick={() => { setUserApiKey(""); localStorage.removeItem("userApiKey"); }} style={{ padding:"4px 8px", borderRadius:6, border:"1px solid rgba(255,80,80,0.3)", background:"rgba(255,80,80,0.08)", color:"#ff8080", fontSize:11, cursor:"pointer" }}>清除</button>
-                )}
-              </div>
             )}
 
             {/* 主编辑区 */}
@@ -641,7 +668,7 @@ export default function App() {
               {/* 右：预览 */}
               <div style={{ display:"flex", flexDirection:"column", gap:8, minHeight:0, paddingLeft:18 }}>
                 <div style={{ color:"rgba(255,255,255,0.45)", fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, flexShrink:0, fontFamily:"'Noto Sans SC',sans-serif" }}>
-                  <span style={{ width:6, height:6, borderRadius:"50%", background: notesStatus==="done"?"#10b981":"#f59e0b" }} />
+                  <span className={notesStatus==="loading"?"loading-dot":""} style={{ width:6, height:6, borderRadius:"50%", background: notesStatus==="done"?"#10b981":notesStatus==="loading"?"#f97316":"#f59e0b" }} />
                   渲染预览
                   {notesStatus === "done" && <span style={{ color:"#10b981", fontSize:9, marginLeft:2 }}>✓ 完成</span>}
                 </div>
@@ -669,7 +696,7 @@ export default function App() {
             {/* 底部操作 */}
             <div style={{ padding:"10px 24px", display:"flex", justifyContent:"center", alignItems:"center", gap:10, flexShrink:0, borderTop:"1px solid rgba(255,255,255,0.07)", background:"rgba(8,16,36,0.35)" }}>
               <button className="clear-btn" style={btn("ghost")} onClick={() => { setInput(""); setHtml(""); setPrintHtml(""); setNotesStatus("idle"); setNotesErr(""); }}>🗑 清空</button>
-              <button className="convert-btn" style={btn("primary", notesStatus==="loading"||!input.trim())} onClick={handleConvertClick} disabled={notesStatus==="loading"||!input.trim()}>
+              <button className="convert-btn" title="Ctrl+Enter" style={btn("primary", notesStatus==="loading"||!input.trim())} onClick={handleConvertClick} disabled={notesStatus==="loading"||!input.trim()}>
                 {notesStatus==="loading" ? "⏳ 转换中…" : "✨ AI 转换"}
               </button>
               <button className="convert-btn" style={btn("print", notesStatus!=="done")} onClick={() => window.print()} disabled={notesStatus!=="done"}>🖨 打印 / 保存 PDF</button>
@@ -758,7 +785,7 @@ export default function App() {
               {/* 右：结果 */}
               <div style={{ display:"flex", flexDirection:"column", gap:8, minHeight:0 }}>
                 <div style={{ color:"rgba(255,255,255,0.45)", fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, flexShrink:0, fontFamily:"'Noto Sans SC',sans-serif" }}>
-                  <span style={{ width:6, height:6, borderRadius:"50%", background: summaryStatus==="done"?"#10b981":"#f59e0b" }} />
+                  <span className={summaryStatus==="loading"?"loading-dot":""} style={{ width:6, height:6, borderRadius:"50%", background: summaryStatus==="done"?"#10b981":summaryStatus==="loading"?"#f97316":"#f59e0b" }} />
                   总结结果
                   {summaryStatus==="done" && <span style={{ color:"#10b981", fontSize:9, marginLeft:2 }}>✓ 完成</span>}
                 </div>
