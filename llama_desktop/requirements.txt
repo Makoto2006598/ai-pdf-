@@ -1,1 +1,4 @@
-llama-cpp-python>=0.2.0
+llama-cpp-python>=0.2.90
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.0.0
